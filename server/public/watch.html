@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>LiveStream — Tonton</title>
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#050508;--card:#10101a;--border:#1c1c2e;--primary:#ff2d55;--text:#fff;--muted:#777}
+  body{background:#000;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  /* ── JOIN SCREEN ── */
+  #joinScreen{flex:1;display:flex;align-items:center;justify-content:center;padding:20px}
+  .join-card{background:var(--card);border:1px solid var(--border);border-radius:24px;padding:36px;width:100%;max-width:440px}
+  .join-card h1{font-size:22px;font-weight:900;margin-bottom:4px}
+  .join-card .sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+  .stream-id-big{font-size:48px;font-weight:900;color:var(--primary);letter-spacing:8px;text-align:center;padding:16px;background:#0a0a12;border-radius:12px;margin-bottom:20px;cursor:pointer;user-select:all}
+  .field{margin-bottom:16px}
+  .field label{display:block;color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .field input{width:100%;background:#0a0a12;border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:15px;outline:none;transition:border-color .2s}
+  .field input:focus{border-color:var(--primary)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:14px 24px;border-radius:99px;border:none;cursor:pointer;font-weight:700;font-size:15px;width:100%;transition:opacity .15s}
+  .btn-primary{background:var(--primary);color:#fff}
+  .btn:hover{opacity:.88}
+  .btn-back{background:transparent;border:1.5px solid var(--border);color:var(--muted);padding:10px;margin-bottom:20px;border-radius:99px;cursor:pointer;font-size:13px}
+  .btn-back:hover{color:var(--text)}
+  .stream-info{background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:20px}
+  .stream-info h3{font-size:16px;font-weight:700;margin-bottom:4px}
+  .stream-meta{color:var(--muted);font-size:13px;display:flex;gap:12px}
+  .err{background:rgba(255,45,85,.12);border:1px solid rgba(255,45,85,.3);border-radius:10px;padding:10px 14px;color:#ff6b85;font-size:13px;margin-bottom:14px}
+
+  /* ── WATCH SCREEN ── */
+  #watchScreen{flex:1;display:none;position:relative;overflow:hidden;background:#000}
+  #remoteVideo{width:100%;height:100%;object-fit:cover}
+  .no-video{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--muted)}
+  .no-video-letter{font-size:100px;font-weight:900;opacity:.08}
+
+  /* HUD top */
+  .top-hud{position:absolute;top:0;left:0;right:0;padding:env(safe-area-inset-top,0) 14px 0;padding-top:calc(env(safe-area-inset-top,0px) + 14px);background:linear-gradient(to bottom,rgba(0,0,0,.7),transparent)}
+  .hud-row{display:flex;align-items:center;justify-content:space-between;padding-bottom:12px}
+  .host-pill{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.5);backdrop-filter:blur(8px);border-radius:99px;padding:6px 12px 6px 6px}
+  .host-avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:14px;flex-shrink:0}
+  .host-name-txt{font-size:13px;font-weight:700}
+  .host-sub{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:var(--primary);animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .stat-row{display:flex;gap:8px;align-items:center}
+  .stat-chip{background:rgba(0,0,0,.5);border-radius:99px;padding:5px 12px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px}
+  .close-btn{width:36px;height:36px;background:rgba(0,0,0,.5);border:none;border-radius:50%;cursor:pointer;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center}
+  .close-btn:hover{background:rgba(0,0,0,.7)}
+
+  /* Title */
+  .title-box{position:absolute;top:110px;left:14px;right:80px}
+  .title-txt{font-size:14px;font-weight:700;text-shadow:0 1px 8px rgba(0,0,0,.9)}
+
+  /* Side actions */
+  .side-actions{position:absolute;right:14px;bottom:140px;display:flex;flex-direction:column;align-items:center;gap:18px}
+  .action-btn{display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;background:none;border:none;color:#fff}
+  .action-icon{width:48px;height:48px;background:rgba(0,0,0,.5);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;transition:transform .1s}
+  .action-btn:active .action-icon{transform:scale(0.9)}
+  .action-label{font-size:11px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.9)}
+
+  /* Floating hearts */
+  #heartCanvas{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .fheart{position:absolute;font-size:26px;pointer-events:none;animation:floatUp 1.4s ease-out forwards}
+  @keyframes floatUp{0%{opacity:1;transform:translateY(0) scale(0.6)}100%{opacity:0;transform:translateY(-220px) scale(1.1)}}
+
+  /* Emoji Rain */
+  #emojiRainCanvas{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .rain-emoji{position:absolute;pointer-events:none;animation:rainUp 2s ease-out forwards}
+  @keyframes rainUp{0%{opacity:1;transform:translateY(0) scale(0.5)}100%{opacity:0;transform:translateY(-300px) scale(1.1)}}
+
+  /* Chat area */
+  .chat-area{position:absolute;bottom:0;left:0;right:0;padding:0 14px;padding-bottom:env(safe-area-inset-bottom,16px)}
+  .chat-msgs{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;padding-bottom:6px}
+  .chat-msgs::-webkit-scrollbar{display:none}
+  .chat-msg{display:flex;align-items:flex-start;gap:6px}
+  .msg-bubble{background:rgba(0,0,0,.5);backdrop-filter:blur(6px);border-radius:10px;padding:5px 10px;max-width:80%;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .msg-name{font-size:12px;font-weight:700;color:var(--primary)}
+  .msg-name.host-name{color:#ffd700}
+  .msg-text{font-size:13px;line-height:1.4}
+  .sys-msg{font-size:12px;color:rgba(255,255,255,.35);padding:2px 0}
+  .emoji-bar{display:flex;gap:5px;padding:5px 0;overflow-x:auto;scrollbar-width:none}
+  .emoji-bar::-webkit-scrollbar{display:none}
+  .emoji-btn-bar{background:rgba(0,0,0,.4);border:none;border-radius:99px;padding:6px 10px;font-size:18px;cursor:pointer;transition:transform .1s}
+  .emoji-btn-bar:hover{transform:scale(1.25)}
+  .chat-input-row{display:flex;gap:8px;align-items:center;margin-top:6px;margin-bottom:10px}
+  .chat-input{flex:1;background:rgba(0,0,0,.55);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.15);border-radius:99px;padding:10px 16px;color:#fff;font-size:14px;outline:none}
+  .chat-input::placeholder{color:rgba(255,255,255,.4)}
+  .send-btn{width:40px;height:40px;background:var(--primary);border:none;border-radius:50%;cursor:pointer;color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+  /* Ended overlay */
+  #endedOverlay{display:none;position:absolute;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(10px);align-items:center;justify-content:center;flex-direction:column;gap:16px;text-align:center;z-index:50}
+  #endedOverlay.show{display:flex}
+  #endedOverlay h2{font-size:22px;font-weight:900}
+  #endedOverlay p{color:var(--muted);font-size:14px}
+
+  /* Double-tap overlay */
+  #tapLayer{position:absolute;inset:0;z-index:5}
+
+  @media(max-width:600px){.side-actions{bottom:130px}.title-box{top:105px}}
+</style>
+</head>
+<body>
+
+<!-- ── JOIN SCREEN ───────────────────────────────────────────── -->
+<div id="joinScreen">
+  <div class="join-card">
+    <button class="btn-back" onclick="window.location.href='/'">← Kembali</button>
+    <h1>📺 Tonton Siaran</h1>
+    <p class="sub">Masukkan Stream ID atau tempel link yang dibagikan host</p>
+
+    <div id="streamPreview" style="display:none">
+      <div class="stream-info" id="streamInfoBox"></div>
+    </div>
+
+    <div id="joinErr" class="err" style="display:none"></div>
+
+    <div class="field">
+      <label>Stream ID</label>
+      <input type="text" id="streamIdInput" placeholder="Contoh: A3B9F2C1" maxlength="16"
+        oninput="this.value=this.value.toUpperCase()" onpaste="setTimeout(()=>lookupStream(),100)"/>
+    </div>
+    <div class="field">
+      <label>Nama Kamu (opsional)</label>
+      <input type="text" id="viewerNameInput" placeholder="Biarkan kosong untuk anonim" maxlength="30"/>
+    </div>
+    <button class="btn btn-primary" id="joinBtn" onclick="joinStream()">▶ Tonton Sekarang</button>
+  </div>
+</div>
+
+<!-- ── WATCH SCREEN ───────────────────────────────────────────── -->
+<div id="watchScreen">
+  <video id="remoteVideo" autoplay playsinline></video>
+  <div class="no-video" id="noVideo">
+    <div class="no-video-letter" id="noVideoLetter">A</div>
+    <p style="color:rgba(255,255,255,.3);font-size:14px">Menghubungkan video...</p>
+  </div>
+
+  <!-- Double-tap layer -->
+  <div id="tapLayer"></div>
+
+  <!-- Canvases -->
+  <div id="heartCanvas"></div>
+  <div id="emojiRainCanvas"></div>
+
+  <!-- HUD -->
+  <div class="top-hud">
+    <div class="hud-row">
+      <div class="host-pill">
+        <div class="host-avatar" id="hostAvatarEl" style="background:#ff2d55">A</div>
+        <div>
+          <div class="host-name-txt" id="hostNameEl">Host</div>
+          <div class="host-sub"><span class="live-dot"></span> LIVE</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-chip">👁 <span id="viewerCountEl">0</span></div>
+        <div class="stat-chip">❤️ <span id="likeCountEl">0</span></div>
+        <button class="close-btn" onclick="leaveStream()">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Title -->
+  <div class="title-box">
+    <div class="title-txt" id="streamTitleEl"></div>
+  </div>
+
+  <!-- Side actions -->
+  <div class="side-actions">
+    <button class="action-btn" onclick="sendLike()">
+      <div class="action-icon">❤️</div>
+      <span class="action-label" id="likeCountSide">0</span>
+    </button>
+    <button class="action-btn" onclick="shareStream()">
+      <div class="action-icon">📤</div>
+      <span class="action-label">Bagikan</span>
+    </button>
+  </div>
+
+  <!-- Chat -->
+  <div class="chat-area">
+    <div class="chat-msgs" id="chatMsgs"></div>
+    <div class="emoji-bar" id="emojiBar"></div>
+    <div class="chat-input-row">
+      <input class="chat-input" id="chatInput" placeholder="Tulis pesan..." maxlength="200"/>
+      <button class="send-btn" onclick="sendChat()">➤</button>
+    </div>
+  </div>
+
+  <!-- Ended -->
+  <div id="endedOverlay">
+    <div style="font-size:56px">📡</div>
+    <h2>Siaran Berakhir</h2>
+    <p id="endedStats"></p>
+    <button class="btn btn-primary" style="width:auto;padding:12px 28px;margin-top:8px" onclick="window.location.href='/'">Kembali ke Beranda</button>
+  </div>
+</div>
+
+<script>
+const socket = io();
+const EMOJIS = ['❤️','🔥','👏','😂','😍','🎉','💯','✨','🙌','💪'];
+const COLORS = ['#ff2d55','#ff6b35','#ffd700','#34c759','#007aff','#af52de','#ff9500'];
+
+let streamId = null;
+let myName = null;
+let hostPeer = null;
+let likeTotal = 0;
+let tapTimer = null;
+
+// ── URL Params ────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+if (params.get('id')) {
+  document.getElementById('streamIdInput').value = params.get('id').toUpperCase();
+}
+if (params.get('name')) {
+  document.getElementById('viewerNameInput').value = params.get('name');
+}
+
+// ── Init Emoji Bar ────────────────────────────────────────────────
+const emojiBarEl = document.getElementById('emojiBar');
+EMOJIS.forEach(e => {
+  const btn = document.createElement('button');
+  btn.className = 'emoji-btn-bar';
+  btn.textContent = e;
+  btn.onclick = () => sendEmoji(e);
+  emojiBarEl.appendChild(btn);
+});
+
+// ── Auto-lookup stream info ───────────────────────────────────────
+async function lookupStream() {
+  const id = document.getElementById('streamIdInput').value.trim().toUpperCase();
+  if (id.length < 4) return;
+  try {
+    const res = await fetch('/api/streams');
+    const list = await res.json();
+    const s = list.find(x => x.id === id);
+    if (s) {
+      document.getElementById('streamPreview').style.display = 'block';
+      document.getElementById('streamInfoBox').innerHTML = `
+        <h3>${escHtml(s.title)}</h3>
+        <div class="stream-meta">
+          <span>👤 ${escHtml(s.hostName)}</span>
+          <span>👁 ${s.viewerCount} penonton</span>
+          <span>❤️ ${s.likeCount}</span>
+        </div>`;
+      hideErr();
+    }
+  } catch {}
+}
+document.getElementById('streamIdInput').addEventListener('input', () => {
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(lookupStream, 500);
+});
+
+// ── Join ──────────────────────────────────────────────────────────
+function joinStream() {
+  const id = document.getElementById('streamIdInput').value.trim().toUpperCase();
+  const name = document.getElementById('viewerNameInput').value.trim();
+  if (!id) { showErr('Masukkan Stream ID terlebih dahulu.'); return; }
+  streamId = id;
+  myName = name;
+  socket.emit('viewer:join', { streamId: id, viewerName: name });
+}
+
+socket.on('viewer:joined', ({ hostName, title, viewerName }) => {
+  myName = viewerName;
+  document.getElementById('hostNameEl').textContent = hostName;
+  document.getElementById('streamTitleEl').textContent = title;
+  const letter = hostName[0]?.toUpperCase() || 'H';
+  const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+  document.getElementById('hostAvatarEl').textContent = letter;
+  document.getElementById('hostAvatarEl').style.background = color;
+  document.getElementById('noVideoLetter').textContent = letter;
+  document.getElementById('noVideoLetter').style.color = color;
+
+  document.getElementById('joinScreen').style.display = 'none';
+  document.getElementById('watchScreen').style.display = 'block';
+});
+
+socket.on('error', ({ message }) => {
+  showErr(message || 'Terjadi kesalahan. Periksa Stream ID kamu.');
+});
+
+// ── WebRTC (sebagai viewer) ────────────────────────────────────────
+socket.on('webrtc:offer', ({ hostId, signal }) => {
+  hostPeer = new SimplePeer({
+    initiator: false,
+    trickle: true,
+  });
+
+  hostPeer.on('signal', (answerSignal) => {
+    socket.emit('webrtc:answer', { targetId: hostId, signal: answerSignal });
+  });
+
+  hostPeer.on('stream', (stream) => {
+    const video = document.getElementById('remoteVideo');
+    video.srcObject = stream;
+    document.getElementById('noVideo').style.display = 'none';
+  });
+
+  hostPeer.on('error', (err) => {
+    console.warn('WebRTC error:', err.message);
+  });
+
+  hostPeer.on('close', () => {
+    document.getElementById('noVideo').style.display = 'flex';
+  });
+
+  try { hostPeer.signal(signal); } catch {}
+});
+
+socket.on('webrtc:ice', ({ from, candidate }) => {
+  if (hostPeer && !hostPeer.destroyed) {
+    try { hostPeer.signal({ candidate }); } catch {}
+  }
+});
+
+// ── Stats ─────────────────────────────────────────────────────────
+socket.on('viewer:count', ({ count }) => {
+  document.getElementById('viewerCountEl').textContent = count;
+});
+socket.on('like:update', ({ total }) => {
+  likeTotal = total;
+  document.getElementById('likeCountEl').textContent = formatCount(total);
+  document.getElementById('likeCountSide').textContent = formatCount(total);
+});
+
+// ── Chat ──────────────────────────────────────────────────────────
+socket.on('chat:message', (msg) => addChatMsg(msg));
+socket.on('chat:system', ({ text }) => addSysMsg(text));
+
+function sendChat() {
+  const inp = document.getElementById('chatInput');
+  const text = inp.value.trim();
+  if (!text) return;
+  socket.emit('chat:send', { text });
+  inp.value = '';
+}
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChat();
+});
+
+function addChatMsg({ name, text, isHost }) {
+  const msgs = document.getElementById('chatMsgs');
+  const div = document.createElement('div');
+  div.className = 'chat-msg';
+  div.innerHTML = `
+    <div class="msg-bubble">
+      <span class="msg-name ${isHost ? 'host-name' : ''}">${escHtml(name)}</span>
+      <span class="msg-text">${escHtml(text)}</span>
+    </div>`;
+  msgs.appendChild(div);
+  if (msgs.children.length > 80) msgs.removeChild(msgs.firstChild);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+function addSysMsg(text) {
+  const msgs = document.getElementById('chatMsgs');
+  const div = document.createElement('div');
+  div.className = 'sys-msg';
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Like & Double-tap ─────────────────────────────────────────────
+let lastTap = 0;
+document.getElementById('tapLayer').addEventListener('click', (e) => {
+  const now = Date.now();
+  if (now - lastTap < 300) {
+    // double tap
+    for (let i = 0; i < 5; i++) {
+      setTimeout(() => spawnHeart(e.clientX, e.clientY, '❤️'), i * 80);
+    }
+    sendLike();
+  }
+  lastTap = now;
+});
+
+function sendLike() {
+  socket.emit('like:send', { count: 1 });
+  spawnHeart(window.innerWidth * 0.8, window.innerHeight * 0.5, '❤️');
+}
+
+function spawnHeart(x, y, emoji) {
+  const canvas = document.getElementById('heartCanvas');
+  const el = document.createElement('div');
+  el.className = 'fheart';
+  el.textContent = emoji;
+  el.style.left = (x - 14 + (Math.random()-0.5)*40) + 'px';
+  el.style.top = (y - 14 + (Math.random()-0.5)*40) + 'px';
+  el.style.animationDuration = (1.2 + Math.random()*0.5) + 's';
+  canvas.appendChild(el);
+  setTimeout(() => el.remove(), 1800);
+}
+
+// ── Emoji Rain ────────────────────────────────────────────────────
+function sendEmoji(emoji) {
+  socket.emit('emoji:send', { emoji });
+  spawnEmojiRain(emoji);
+  socket.emit('chat:send', { text: emoji });
+}
+socket.on('emoji:rain', ({ emoji }) => spawnEmojiRain(emoji));
+
+function spawnEmojiRain(emoji) {
+  const canvas = document.getElementById('emojiRainCanvas');
+  const count = 16;
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.className = 'rain-emoji';
+      el.textContent = emoji;
+      el.style.left = Math.random() * 90 + '%';
+      el.style.bottom = '80px';
+      el.style.fontSize = (20 + Math.random() * 20) + 'px';
+      el.style.animationDuration = (1.6 + Math.random() * 1) + 's';
+      canvas.appendChild(el);
+      setTimeout(() => el.remove(), 2800);
+    }, i * 70);
+  }
+}
+
+// ── Stream ended ──────────────────────────────────────────────────
+socket.on('stream:ended', ({ duration, likeCount }) => {
+  if (hostPeer && !hostPeer.destroyed) hostPeer.destroy();
+  document.getElementById('endedStats').textContent =
+    `Durasi: ${formatDuration(duration)}  ·  ❤️ ${formatCount(likeCount)} like`;
+  document.getElementById('endedOverlay').classList.add('show');
+});
+
+// ── Leave ─────────────────────────────────────────────────────────
+function leaveStream() {
+  if (!confirm('Keluar dari siaran ini?')) return;
+  if (hostPeer && !hostPeer.destroyed) hostPeer.destroy();
+  window.location.href = '/';
+}
+
+function shareStream() {
+  const url = location.href;
+  if (navigator.share) {
+    navigator.share({ title: 'Tonton Live Stream', url });
+  } else {
+    navigator.clipboard.writeText(url).then(() => alert('✅ Link disalin!')).catch(() => prompt('Salin link:', url));
+  }
+}
+
+// ── Utils ─────────────────────────────────────────────────────────
+function formatCount(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function formatDuration(s) {
+  if (s < 60) return s + ' detik';
+  if (s < 3600) return Math.floor(s/60) + ' menit';
+  return Math.floor(s/3600) + 'j ' + Math.floor((s%3600)/60) + 'm';
+}
+function escHtml(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function showErr(msg) {
+  const el = document.getElementById('joinErr');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideErr() {
+  document.getElementById('joinErr').style.display = 'none';
+}
+
+// Auto-join jika stream ID sudah ada di URL
+if (params.get('id')) {
+  lookupStream();
+}
+</script>
+</body>
+</html>

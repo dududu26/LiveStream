@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>LiveStream — Beranda</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --bg:#0a0a0f;--card:#13131a;--border:#1e1e2e;
+    --primary:#ff2d55;--primary-dim:rgba(255,45,85,0.15);
+    --text:#fff;--muted:#888;--green:#34c759;
+  }
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+  header{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;height:60px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+  .logo{font-size:20px;font-weight:800;color:var(--primary);}
+  .logo span{color:var(--text)}
+  .header-right{display:flex;gap:12px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:99px;border:none;cursor:pointer;font-weight:700;font-size:14px;transition:opacity .15s,transform .1s}
+  .btn:active{transform:scale(0.97)}
+  .btn-primary{background:var(--primary);color:#fff}
+  .btn-outline{background:transparent;color:var(--text);border:1.5px solid var(--border)}
+  .btn:hover{opacity:0.88}
+  main{max-width:1100px;margin:0 auto;padding:32px 16px}
+  h1{font-size:28px;font-weight:900;margin-bottom:6px}
+  .subtitle{color:var(--muted);margin-bottom:28px}
+  .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}
+  .stream-card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden;cursor:pointer;transition:border-color .2s,transform .15s}
+  .stream-card:hover{border-color:var(--primary);transform:translateY(-2px)}
+  .card-thumb{height:160px;background:linear-gradient(135deg,#1a1a2e,#16213e);display:flex;align-items:center;justify-content:center;position:relative}
+  .card-thumb-letter{font-size:64px;font-weight:900;opacity:0.15}
+  .live-pill{position:absolute;top:10px;left:10px;background:var(--primary);color:#fff;font-size:11px;font-weight:800;padding:3px 9px;border-radius:99px;letter-spacing:.5px}
+  .card-body{padding:14px}
+  .card-title{font-weight:700;font-size:15px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-meta{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:12px}
+  .viewers-chip{display:flex;align-items:center;gap:4px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .empty{text-align:center;padding:80px 0;color:var(--muted)}
+  .empty-icon{font-size:56px;margin-bottom:16px}
+  .empty h3{font-size:18px;color:var(--text);margin-bottom:8px}
+  /* Modal */
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;align-items:center;justify-content:center}
+  .modal-overlay.open{display:flex}
+  .modal{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:32px;width:90%;max-width:420px}
+  .modal h2{font-size:20px;font-weight:800;margin-bottom:20px}
+  .form-field{margin-bottom:16px}
+  .form-field label{display:block;color:var(--muted);font-size:13px;font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px}
+  .form-field input{width:100%;background:#0d0d16;border:1px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:15px;outline:none;transition:border-color .2s}
+  .form-field input:focus{border-color:var(--primary)}
+  .modal-actions{display:flex;gap:10px;margin-top:20px}
+  .modal-actions .btn{flex:1;justify-content:center}
+  @media(max-width:600px){h1{font-size:22px}.live-grid{grid-template-columns:1fr}.modal{padding:24px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🔴 Live<span>Stream</span></div>
+  <div class="header-right">
+    <a href="/host" class="btn btn-primary">🎥 Mulai Siaran</a>
+  </div>
+</header>
+
+<main>
+  <h1>Siaran Langsung</h1>
+  <p class="subtitle">Nonton siaran live dari host yang sedang aktif</p>
+  <div class="live-grid" id="streamGrid">
+    <div class="empty" id="emptyState">
+      <div class="empty-icon">📡</div>
+      <h3>Belum ada siaran aktif</h3>
+      <p>Jadilah yang pertama siaran!</p>
+      <a href="/host" class="btn btn-primary" style="margin-top:16px">Mulai Siaran</a>
+    </div>
+  </div>
+</main>
+
+<!-- Modal join sebagai viewer -->
+<div class="modal-overlay" id="joinModal">
+  <div class="modal">
+    <h2>Tonton Siaran</h2>
+    <div class="form-field">
+      <label>Nama Kamu (opsional)</label>
+      <input type="text" id="viewerName" placeholder="Masukkan nama atau biarkan kosong" maxlength="30"/>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Batal</button>
+      <button class="btn btn-primary" onclick="joinStream()">Tonton Sekarang →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let selectedStreamId = null;
+let streams = [];
+
+socket.on('streams:list', (list) => {
+  streams = list;
+  renderStreams(list);
+});
+
+fetch('/api/streams')
+  .then(r => r.json())
+  .then(list => { streams = list; renderStreams(list); });
+
+function renderStreams(list) {
+  const grid = document.getElementById('streamGrid');
+  const empty = document.getElementById('emptyState');
+  if (list.length === 0) {
+    empty.style.display = 'block';
+    const cards = grid.querySelectorAll('.stream-card');
+    cards.forEach(c => c.remove());
+    return;
+  }
+  empty.style.display = 'none';
+  grid.innerHTML = '';
+  list.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'stream-card';
+    div.onclick = () => openJoinModal(s.id);
+    const elapsed = formatDuration(Math.floor((Date.now() - s.startedAt) / 1000));
+    div.innerHTML = `
+      <div class="card-thumb">
+        <span class="card-thumb-letter">${s.hostName[0]?.toUpperCase()}</span>
+        <div class="live-pill">🔴 LIVE</div>
+      </div>
+      <div class="card-body">
+        <div class="card-title">${escHtml(s.title)}</div>
+        <div class="card-meta">
+          <span>${escHtml(s.hostName)}</span>
+          <div class="viewers-chip">
+            <span class="dot"></span>
+            <span>${s.viewerCount} penonton</span>
+          </div>
+        </div>
+        <div style="color:#666;font-size:11px;margin-top:4px">${elapsed}</div>
+      </div>
+    `;
+    grid.appendChild(div);
+  });
+}
+
+function openJoinModal(streamId) {
+  selectedStreamId = streamId;
+  document.getElementById('joinModal').classList.add('open');
+  document.getElementById('viewerName').focus();
+}
+function closeModal() {
+  document.getElementById('joinModal').classList.remove('open');
+  selectedStreamId = null;
+}
+function joinStream() {
+  if (!selectedStreamId) return;
+  const name = document.getElementById('viewerName').value.trim();
+  const url = `/watch?id=${selectedStreamId}${name ? '&name=' + encodeURIComponent(name) : ''}`;
+  window.location.href = url;
+}
+document.getElementById('viewerName').addEventListener('keydown', e => {
+  if (e.key === 'Enter') joinStream();
+});
+document.getElementById('joinModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+function formatDuration(secs) {
+  if (secs < 60) return `${secs}d`;
+  if (secs < 3600) return `${Math.floor(secs/60)}m`;
+  return `${Math.floor(secs/3600)}j ${Math.floor((secs%3600)/60)}m`;
+}
+function escHtml(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

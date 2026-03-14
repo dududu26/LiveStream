@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>LiveStream — Host</title>
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#050508;--card:#10101a;--border:#1c1c2e;--primary:#ff2d55;--text:#fff;--muted:#777}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  /* ── SETUP SCREEN ── */
+  #setupScreen{flex:1;display:flex;align-items:center;justify-content:center;padding:20px}
+  .setup-card{background:var(--card);border:1px solid var(--border);border-radius:24px;padding:36px;width:100%;max-width:480px}
+  .setup-card h1{font-size:26px;font-weight:900;margin-bottom:6px}
+  .setup-card .sub{color:var(--muted);margin-bottom:28px;font-size:14px}
+  .field{margin-bottom:18px}
+  .field label{display:block;color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .field input{width:100%;background:#0a0a12;border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;color:var(--text);font-size:15px;outline:none;transition:border-color .2s}
+  .field input:focus{border-color:var(--primary)}
+  .cam-preview{width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;margin-bottom:20px;position:relative}
+  .cam-preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .cam-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted)}
+  .cam-placeholder span{font-size:40px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:14px 24px;border-radius:99px;border:none;cursor:pointer;font-weight:700;font-size:15px;width:100%;transition:opacity .15s,transform .1s}
+  .btn:active{transform:scale(0.97)}
+  .btn-primary{background:var(--primary);color:#fff}
+  .btn:hover{opacity:.88}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .cam-row{display:flex;gap:10px;margin-bottom:18px}
+  .btn-sm{padding:8px 16px;font-size:13px;border-radius:99px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer;transition:opacity .15s}
+  .btn-sm.active{background:var(--primary);border-color:var(--primary)}
+  .btn-sm:hover{opacity:.8}
+  .error-msg{background:rgba(255,45,85,0.12);border:1px solid rgba(255,45,85,0.3);border-radius:10px;padding:10px 14px;color:#ff6b85;font-size:13px;margin-bottom:14px}
+
+  /* ── LIVE SCREEN ── */
+  #liveScreen{flex:1;display:none;position:relative;overflow:hidden;background:#000}
+  #localVideo{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+
+  /* Overlays */
+  .top-hud{position:absolute;top:0;left:0;right:0;padding:16px;display:flex;align-items:flex-start;justify-content:space-between;background:linear-gradient(to bottom,rgba(0,0,0,.7),transparent)}
+  .hud-left{display:flex;flex-direction:column;gap:8px}
+  .live-badge{background:var(--primary);color:#fff;font-size:11px;font-weight:800;padding:4px 10px;border-radius:99px;display:inline-flex;align-items:center;gap:4px;letter-spacing:.5px}
+  .dot-live{width:6px;height:6px;background:#fff;border-radius:50%;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .hud-stats{display:flex;gap:10px}
+  .stat-chip{background:rgba(0,0,0,.5);border-radius:99px;padding:4px 10px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px}
+  .stream-id-box{background:rgba(0,0,0,.6);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:8px 14px;display:flex;align-items:center;gap:10px}
+  .stream-id-label{font-size:11px;color:var(--muted)}
+  .stream-id-val{font-size:18px;font-weight:900;color:var(--primary);letter-spacing:3px}
+  .copy-btn{background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:4px 8px;cursor:pointer}
+  .copy-btn:hover{background:rgba(255,255,255,.08)}
+
+  .title-box{position:absolute;top:120px;left:16px;right:140px}
+  .title-txt{font-size:15px;font-weight:700;text-shadow:0 1px 8px rgba(0,0,0,.9)}
+
+  /* Chat */
+  .chat-area{position:absolute;bottom:80px;left:0;right:0;padding:0 14px;display:flex;flex-direction:column;gap:0}
+  .chat-msgs{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;padding-bottom:4px}
+  .chat-msgs::-webkit-scrollbar{display:none}
+  .chat-msg{display:flex;align-items:flex-start;gap:6px}
+  .msg-bubble{background:rgba(0,0,0,.5);backdrop-filter:blur(6px);border-radius:10px;padding:5px 10px;max-width:78%;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .msg-name{font-size:12px;font-weight:700;color:var(--primary)}
+  .msg-name.host-name{color:#ffd700}
+  .msg-text{font-size:13px;line-height:1.4}
+  .sys-msg{font-size:12px;color:rgba(255,255,255,.4);padding:2px 0;text-align:left}
+  .chat-input-row{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .chat-input{flex:1;background:rgba(0,0,0,.55);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.15);border-radius:99px;padding:10px 16px;color:#fff;font-size:14px;outline:none}
+  .chat-input::placeholder{color:rgba(255,255,255,.4)}
+  .send-btn{width:40px;height:40px;background:var(--primary);border:none;border-radius:50%;cursor:pointer;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center}
+  .send-btn:hover{opacity:.85}
+
+  /* Emoji bar */
+  .emoji-bar{display:flex;gap:6px;padding:6px 0;overflow-x:auto;scrollbar-width:none}
+  .emoji-bar::-webkit-scrollbar{display:none}
+  .emoji-btn{background:rgba(0,0,0,.4);border:none;border-radius:99px;padding:6px 10px;font-size:18px;cursor:pointer;transition:transform .1s}
+  .emoji-btn:hover{transform:scale(1.25)}
+
+  /* End btn */
+  .end-btn{position:absolute;bottom:16px;right:16px;background:#ff3b30;border:none;border-radius:99px;color:#fff;font-weight:800;font-size:14px;padding:12px 20px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .end-btn:hover{opacity:.88}
+  .flip-btn{position:absolute;top:72px;right:16px;width:42px;height:42px;background:rgba(0,0,0,.5);border:none;border-radius:50%;cursor:pointer;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center}
+
+  /* Share card */
+  .share-card{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(10,10,20,.92);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:28px;text-align:center;display:none;z-index:20;min-width:300px}
+  .share-card.show{display:block}
+  .share-card h2{font-size:18px;font-weight:800;margin-bottom:8px}
+  .share-url{background:#0a0a12;border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--primary);margin:12px 0;word-break:break-all;cursor:pointer;user-select:all}
+  .share-close{background:transparent;border:1px solid var(--border);border-radius:99px;color:var(--muted);padding:8px 20px;cursor:pointer;font-size:13px;margin-top:4px}
+
+  /* Emoji Rain */
+  #emojiRainCanvas{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .rain-emoji{position:absolute;font-size:28px;animation:rainUp 2s ease-out forwards;pointer-events:none}
+  @keyframes rainUp{0%{opacity:1;transform:translateY(0) scale(0.5)}100%{opacity:0;transform:translateY(-300px) scale(1.1)}}
+
+  @media(max-width:600px){.top-hud{padding:12px}.stream-id-val{font-size:15px}.title-box{top:105px}}
+</style>
+</head>
+<body>
+
+<!-- ── SETUP ──────────────────────────────────────────────────── -->
+<div id="setupScreen">
+  <div class="setup-card">
+    <h1>🎥 Mulai Siaran</h1>
+    <p class="sub">Tidak perlu daftar — langsung siaran!</p>
+
+    <div class="cam-preview" id="camPreview">
+      <video id="previewVideo" autoplay muted playsinline></video>
+      <div class="cam-placeholder" id="camPlaceholder">
+        <span>📷</span>
+        <p>Kamera belum aktif</p>
+      </div>
+    </div>
+
+    <div class="cam-row">
+      <button class="btn-sm" id="openCamBtn" onclick="openCamera()">🎥 Buka Kamera</button>
+      <button class="btn-sm" id="flipCamBtn" onclick="flipCamera()" disabled>🔄 Ganti Kamera</button>
+      <button class="btn-sm" id="testMicBtn" onclick="testMic()">🎤 Tes Mic</button>
+    </div>
+
+    <div id="errMsg" class="error-msg" style="display:none"></div>
+
+    <div class="field">
+      <label>Nama Host</label>
+      <input type="text" id="hostName" placeholder="Nama kamu" maxlength="30"/>
+    </div>
+    <div class="field">
+      <label>Judul Siaran</label>
+      <input type="text" id="streamTitle" placeholder="Topik siaran hari ini?" maxlength="80"/>
+    </div>
+
+    <button class="btn btn-primary" id="goLiveBtn" onclick="goLive()" disabled>
+      🔴 Mulai Siaran Live
+    </button>
+  </div>
+</div>
+
+<!-- ── LIVE ───────────────────────────────────────────────────── -->
+<div id="liveScreen">
+  <video id="localVideo" autoplay muted playsinline></video>
+
+  <!-- Emoji Rain Layer -->
+  <div id="emojiRainCanvas"></div>
+
+  <!-- Top HUD -->
+  <div class="top-hud">
+    <div class="hud-left">
+      <div class="live-badge"><span class="dot-live"></span> LIVE</div>
+      <div class="hud-stats">
+        <div class="stat-chip">👁 <span id="viewerCountEl">0</span></div>
+        <div class="stat-chip">❤️ <span id="likeCountEl">0</span></div>
+        <div class="stat-chip" id="timerEl">00:00</div>
+      </div>
+    </div>
+    <div class="stream-id-box" onclick="showShareCard()">
+      <div>
+        <div class="stream-id-label">STREAM ID</div>
+        <div class="stream-id-val" id="streamIdDisplay">——</div>
+      </div>
+      <button class="copy-btn">📋 Bagikan</button>
+    </div>
+  </div>
+
+  <!-- Judul -->
+  <div class="title-box">
+    <div class="title-txt" id="liveTitleEl"></div>
+  </div>
+
+  <!-- Flip Camera -->
+  <button class="flip-btn" onclick="flipCameraLive()" title="Ganti Kamera">🔄</button>
+
+  <!-- Chat -->
+  <div class="chat-area">
+    <div class="chat-msgs" id="chatMsgs"></div>
+    <div class="emoji-bar" id="emojiBar"></div>
+    <div class="chat-input-row">
+      <input class="chat-input" id="chatInput" placeholder="Tulis pesan..." maxlength="200"/>
+      <button class="send-btn" onclick="sendChat()">➤</button>
+    </div>
+  </div>
+
+  <!-- End -->
+  <button class="end-btn" onclick="endLive()">⏹ Akhiri Siaran</button>
+
+  <!-- Share Card -->
+  <div class="share-card" id="shareCard">
+    <h2>📤 Bagikan ke Penonton</h2>
+    <p style="color:#888;font-size:13px">Kirim link ini kepada siapapun yang ingin menonton</p>
+    <div class="share-url" id="shareUrl" onclick="copyShareUrl()">—</div>
+    <button class="btn btn-primary" onclick="copyShareUrl()" style="width:auto;padding:10px 24px;margin-bottom:8px">📋 Salin Link</button>
+    <br>
+    <button class="share-close" onclick="document.getElementById('shareCard').classList.remove('show')">Tutup</button>
+  </div>
+</div>
+
+<script>
+const socket = io();
+const EMOJIS = ['❤️','🔥','👏','😂','😍','🎉','💯','✨','🙌','💪'];
+
+let localStream = null;
+let currentFacing = 'user';
+let streamId = null;
+let timerInterval = null;
+let startTime = 0;
+let likeCount = 0;
+let peers = {}; // viewerId → SimplePeer instance
+
+// ── Init Emoji Bar ────────────────────────────────────────────────
+const emojiBarEl = document.getElementById('emojiBar');
+EMOJIS.forEach(e => {
+  const btn = document.createElement('button');
+  btn.className = 'emoji-btn';
+  btn.textContent = e;
+  btn.onclick = () => sendEmoji(e);
+  emojiBarEl.appendChild(btn);
+});
+
+// ── Camera Setup ──────────────────────────────────────────────────
+async function openCamera() {
+  try {
+    hideErr();
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: currentFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: true,
+    });
+    const preview = document.getElementById('previewVideo');
+    preview.srcObject = localStream;
+    document.getElementById('camPlaceholder').style.display = 'none';
+    document.getElementById('flipCamBtn').disabled = false;
+    document.getElementById('goLiveBtn').disabled = false;
+    document.getElementById('openCamBtn').classList.add('active');
+  } catch (err) {
+    showErr(err.name === 'NotAllowedError'
+      ? '❌ Izin kamera ditolak. Klik ikon kunci/kamera di address bar dan izinkan.'
+      : '❌ Gagal buka kamera: ' + err.message);
+  }
+}
+
+async function flipCamera() {
+  currentFacing = currentFacing === 'user' ? 'environment' : 'user';
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    await openCamera();
+  }
+}
+
+async function flipCameraLive() {
+  currentFacing = currentFacing === 'user' ? 'environment' : 'user';
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: currentFacing },
+        audio: true,
+      });
+      document.getElementById('localVideo').srcObject = localStream;
+      // Re-connect semua peer
+      Object.values(peers).forEach(p => {
+        if (p && !p.destroyed) {
+          localStream.getTracks().forEach(track => {
+            p.addTrack(track, localStream);
+          });
+        }
+      });
+    } catch {}
+  }
+}
+
+async function testMic() {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    alert('✅ Mikrofon berfungsi normal!');
+    s.getTracks().forEach(t => t.stop());
+  } catch {
+    showErr('❌ Mikrofon tidak bisa diakses.');
+  }
+}
+
+// ── Go Live ────────────────────────────────────────────────────────
+function goLive() {
+  if (!localStream) { showErr('Buka kamera dulu sebelum siaran.'); return; }
+  const hostName = document.getElementById('hostName').value.trim() || 'Host';
+  const title = document.getElementById('streamTitle').value.trim() || 'Live Stream';
+
+  socket.emit('host:start', { hostName, title });
+
+  // Switch UI
+  document.getElementById('setupScreen').style.display = 'none';
+  const live = document.getElementById('liveScreen');
+  live.style.display = 'block';
+  document.getElementById('localVideo').srcObject = localStream;
+  document.getElementById('liveTitleEl').textContent = title;
+
+  // Timer
+  startTime = Date.now();
+  timerInterval = setInterval(updateTimer, 1000);
+}
+
+socket.on('host:started', ({ streamId: id }) => {
+  streamId = id;
+  document.getElementById('streamIdDisplay').textContent = id;
+  const watchUrl = `${location.origin}/watch?id=${id}`;
+  document.getElementById('shareUrl').textContent = watchUrl;
+  addSysMsg('🔴 Siaran dimulai! ID: ' + id);
+});
+
+// ── Viewer join → buat SimplePeer offer ───────────────────────────
+socket.on('webrtc:viewer-joined', ({ viewerId, viewerName }) => {
+  addSysMsg(`${viewerName} bergabung 👋`);
+  const peer = new SimplePeer({
+    initiator: true,
+    trickle: true,
+    stream: localStream,
+  });
+  peers[viewerId] = peer;
+
+  peer.on('signal', (signal) => {
+    socket.emit('webrtc:offer', { targetId: viewerId, signal });
+  });
+  peer.on('error', () => { delete peers[viewerId]; });
+  peer.on('close', () => { delete peers[viewerId]; });
+});
+
+// Terima answer dari viewer
+socket.on('webrtc:answer', ({ viewerId, signal }) => {
+  const peer = peers[viewerId];
+  if (peer && !peer.destroyed) {
+    try { peer.signal(signal); } catch {}
+  }
+});
+
+// ICE candidate
+socket.on('webrtc:ice', ({ from, candidate }) => {
+  const peer = peers[from];
+  if (peer && !peer.destroyed) {
+    try { peer.signal({ candidate }); } catch {}
+  }
+});
+
+// Viewer pergi
+socket.on('webrtc:viewer-left', ({ viewerId }) => {
+  const peer = peers[viewerId];
+  if (peer && !peer.destroyed) peer.destroy();
+  delete peers[viewerId];
+});
+
+// ── Stats ─────────────────────────────────────────────────────────
+socket.on('viewer:count', ({ count }) => {
+  document.getElementById('viewerCountEl').textContent = count;
+});
+socket.on('like:update', ({ total }) => {
+  likeCount = total;
+  document.getElementById('likeCountEl').textContent = formatCount(total);
+});
+
+// ── Chat ──────────────────────────────────────────────────────────
+socket.on('chat:message', (msg) => addChatMsg(msg));
+socket.on('chat:system', ({ text }) => addSysMsg(text));
+
+function sendChat() {
+  const inp = document.getElementById('chatInput');
+  const text = inp.value.trim();
+  if (!text) return;
+  socket.emit('chat:send', { text });
+  inp.value = '';
+}
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChat();
+});
+
+function addChatMsg({ name, text, isHost }) {
+  const msgs = document.getElementById('chatMsgs');
+  const div = document.createElement('div');
+  div.className = 'chat-msg';
+  div.innerHTML = `
+    <div class="msg-bubble">
+      <span class="msg-name ${isHost ? 'host-name' : ''}">${escHtml(name)}</span>
+      <span class="msg-text">${escHtml(text)}</span>
+    </div>`;
+  msgs.appendChild(div);
+  if (msgs.children.length > 80) msgs.removeChild(msgs.firstChild);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+function addSysMsg(text) {
+  const msgs = document.getElementById('chatMsgs');
+  const div = document.createElement('div');
+  div.className = 'sys-msg';
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Emoji Rain ────────────────────────────────────────────────────
+function sendEmoji(emoji) {
+  socket.emit('emoji:send', { emoji });
+  spawnEmojiRain(emoji);
+  socket.emit('chat:send', { text: emoji });
+}
+socket.on('emoji:rain', ({ emoji }) => spawnEmojiRain(emoji));
+
+function spawnEmojiRain(emoji) {
+  const canvas = document.getElementById('emojiRainCanvas');
+  const count = 14;
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.className = 'rain-emoji';
+      el.textContent = emoji;
+      el.style.left = Math.random() * 90 + '%';
+      el.style.bottom = '80px';
+      el.style.animationDuration = (1.5 + Math.random()) + 's';
+      el.style.fontSize = (22 + Math.random() * 18) + 'px';
+      canvas.appendChild(el);
+      setTimeout(() => el.remove(), 2500);
+    }, i * 80);
+  }
+}
+
+// ── End Live ──────────────────────────────────────────────────────
+function endLive() {
+  if (!confirm('Yakin ingin mengakhiri siaran?')) return;
+  socket.emit('host:stop');
+  Object.values(peers).forEach(p => { if (p && !p.destroyed) p.destroy(); });
+  peers = {};
+  clearInterval(timerInterval);
+  if (localStream) localStream.getTracks().forEach(t => t.stop());
+  window.location.href = '/';
+}
+
+// ── Share ─────────────────────────────────────────────────────────
+function showShareCard() {
+  document.getElementById('shareCard').classList.add('show');
+}
+function copyShareUrl() {
+  const url = document.getElementById('shareUrl').textContent;
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✅ Disalin!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  }).catch(() => {
+    prompt('Salin URL ini:', url);
+  });
+}
+
+// ── Timer ─────────────────────────────────────────────────────────
+function updateTimer() {
+  const secs = Math.floor((Date.now() - startTime) / 1000);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  document.getElementById('timerEl').textContent =
+    h > 0
+      ? `${h}:${pad(m)}:${pad(s)}`
+      : `${pad(m)}:${pad(s)}`;
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// ── Utils ─────────────────────────────────────────────────────────
+function formatCount(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function escHtml(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function showErr(msg) {
+  const el = document.getElementById('errMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideErr() {
+  document.getElementById('errMsg').style.display = 'none';
+}
+</script>
+</body>
+</html>
