@@ -1,201 +1,203 @@
 // Powered by OnSpace.AI
-// WebRTC Service: mengelola peer connection untuk siaran video live
-// - Streamer: ambil kamera → kirim offer ke server → terima answer dari penonton
-// - Viewer: terima offer dari streamer → kirim answer → tampilkan video
-import { wsService } from './websocket';
+// WebRTC Service v2 — menggunakan SimplePeer via Socket.io signaling
+// Kompatibel dengan server/server.js yang sudah ada
 
-export type RTCRole = 'streamer' | 'viewer';
+import { socketService } from './socketioService';
 
 interface RTCCallbacks {
   onLocalStream?: (stream: MediaStream) => void;
   onRemoteStream?: (stream: MediaStream) => void;
-  onConnectionChange?: (state: RTCPeerConnectionState) => void;
+  onConnectionChange?: (state: string) => void;
   onError?: (err: string) => void;
 }
 
-class WebRTCService {
-  private pc: RTCPeerConnection | null = null;
+class WebRTCServiceV2 {
   private localStream: MediaStream | null = null;
-  private role: RTCRole = 'viewer';
-  private roomId: string = '';
+  private peers: Map<string, any> = new Map(); // viewerId → SimplePeer
+  private role: 'streamer' | 'viewer' | null = null;
   private callbacks: RTCCallbacks = {};
 
-  // ICE server config (STUN publik Google, cukup untuk jaringan LAN/ngrok)
-  private iceConfig: RTCConfiguration = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ],
-  };
-
   isSupported(): boolean {
-    return typeof window !== 'undefined' &&
+    return (
+      typeof window !== 'undefined' &&
       typeof RTCPeerConnection !== 'undefined' &&
       typeof navigator !== 'undefined' &&
-      typeof navigator.mediaDevices !== 'undefined';
+      !!navigator.mediaDevices
+    );
   }
 
-  async startAsStreamer(
-    roomId: string,
-    callbacks: RTCCallbacks
-  ): Promise<MediaStream | null> {
+  private async loadSimplePeer(): Promise<any> {
+    if ((window as any).SimplePeer) return (window as any).SimplePeer;
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js';
+      script.onload = () => resolve((window as any).SimplePeer);
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  // ── STREAMER: buka kamera, tunggu viewer join, kirim offer ─────
+  async startAsStreamer(callbacks: RTCCallbacks): Promise<MediaStream | null> {
     if (!this.isSupported()) {
       callbacks.onError?.('WebRTC tidak didukung di platform ini');
       return null;
     }
-
     this.role = 'streamer';
-    this.roomId = roomId;
     this.callbacks = callbacks;
 
     try {
-      // 1. Ambil stream kamera + mikrofon
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 1280 } },
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: true,
       });
       callbacks.onLocalStream?.(this.localStream);
 
-      // 2. Buat peer connection
-      this.createPeerConnection();
+      const SimplePeer = await this.loadSimplePeer();
 
-      // 3. Tambah track kamera ke peer connection
-      this.localStream.getTracks().forEach(track => {
-        this.pc!.addTrack(track, this.localStream!);
+      // Saat ada viewer baru → buat peer dan kirim offer
+      socketService.on('webrtc:viewer-joined', ({ viewerId, viewerName }: any) => {
+        const peer = new SimplePeer({
+          initiator: true,
+          trickle: true,
+          stream: this.localStream,
+        });
+
+        this.peers.set(viewerId, peer);
+
+        peer.on('signal', (signal: any) => {
+          socketService.sendOffer(viewerId, signal);
+        });
+
+        peer.on('error', () => this.peers.delete(viewerId));
+        peer.on('close', () => this.peers.delete(viewerId));
       });
 
-      // 4. Dengarkan offer request dari viewer via WebSocket
-      wsService.on('offer_request', async (msg) => {
-        if (msg.roomId !== roomId) return;
-        await this.createAndSendOffer(msg.userId!);
+      // Terima answer dari viewer
+      socketService.on('webrtc:answer', ({ viewerId, signal }: any) => {
+        const peer = this.peers.get(viewerId);
+        if (peer && !peer.destroyed) {
+          try { peer.signal(signal); } catch {}
+        }
       });
 
-      // 5. Dengarkan answer dari viewer
-      wsService.on('answer', async (msg) => {
-        if (msg.roomId !== roomId) return;
-        try {
-          await this.pc!.setRemoteDescription(
-            new RTCSessionDescription(msg.data.sdp)
-          );
-        } catch (e) {}
+      // ICE candidate dari viewer
+      socketService.on('webrtc:ice', ({ from, candidate }: any) => {
+        const peer = this.peers.get(from);
+        if (peer && !peer.destroyed) {
+          try { peer.signal({ candidate }); } catch {}
+        }
       });
 
-      // 6. Dengarkan ICE candidate dari viewer
-      wsService.on('ice_candidate', async (msg) => {
-        if (msg.roomId !== roomId) return;
-        try {
-          await this.pc!.addIceCandidate(new RTCIceCandidate(msg.data.candidate));
-        } catch (e) {}
+      // Viewer pergi
+      socketService.on('webrtc:viewer-left', ({ viewerId }: any) => {
+        const peer = this.peers.get(viewerId);
+        if (peer && !peer.destroyed) peer.destroy();
+        this.peers.delete(viewerId);
       });
 
       return this.localStream;
     } catch (err: any) {
-      const msg = err?.name === 'NotAllowedError'
-        ? 'Izin kamera/mikrofon ditolak. Buka pengaturan browser dan izinkan akses.'
-        : err?.name === 'NotFoundError'
-        ? 'Kamera tidak ditemukan di perangkat ini.'
-        : 'Gagal membuka kamera: ' + (err?.message ?? 'Unknown error');
+      const msg =
+        err?.name === 'NotAllowedError'
+          ? 'Izin kamera/mikrofon ditolak. Izinkan di pengaturan browser.'
+          : err?.name === 'NotFoundError'
+          ? 'Kamera tidak ditemukan.'
+          : 'Gagal buka kamera: ' + (err?.message ?? '');
       callbacks.onError?.(msg);
       return null;
     }
   }
 
-  async startAsViewer(
-    roomId: string,
-    hostId: string,
-    callbacks: RTCCallbacks
-  ): Promise<void> {
+  // ── VIEWER: sambung ke stream host ────────────────────────────
+  async startAsViewer(callbacks: RTCCallbacks): Promise<void> {
     if (!this.isSupported()) return;
-
     this.role = 'viewer';
-    this.roomId = roomId;
     this.callbacks = callbacks;
 
-    this.createPeerConnection();
+    const SimplePeer = await this.loadSimplePeer().catch(() => null);
+    if (!SimplePeer) return;
 
-    // Dengarkan offer dari streamer
-    wsService.on('offer', async (msg) => {
-      if (msg.roomId !== roomId) return;
-      try {
-        await this.pc!.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
-        const answer = await this.pc!.createAnswer();
-        await this.pc!.setLocalDescription(answer);
-        wsService.send({
-          type: 'answer',
-          roomId,
-          data: { sdp: answer, targetId: msg.userId },
+    // Terima offer dari host → buat peer sebagai non-initiator
+    socketService.on('webrtc:offer', ({ hostId, signal }: any) => {
+      // Jika sudah ada peer untuk host ini, signal saja
+      let peer = this.peers.get('host');
+      if (!peer || peer.destroyed) {
+        peer = new SimplePeer({
+          initiator: false,
+          trickle: true,
         });
-      } catch (e) {}
-    });
+        this.peers.set('host', peer);
 
-    // Dengarkan ICE candidate dari streamer
-    wsService.on('ice_candidate', async (msg) => {
-      if (msg.roomId !== roomId) return;
-      try {
-        await this.pc!.addIceCandidate(new RTCIceCandidate(msg.data.candidate));
-      } catch (e) {}
-    });
+        peer.on('signal', (answerSignal: any) => {
+          socketService.sendAnswer(hostId, answerSignal);
+        });
 
-    // Minta offer dari streamer
-    wsService.send({
-      type: 'offer_request',
-      roomId,
-      data: { hostId },
-    } as any);
-  }
+        peer.on('stream', (stream: MediaStream) => {
+          callbacks.onRemoteStream?.(stream);
+          callbacks.onConnectionChange?.('connected');
+        });
 
-  private createPeerConnection() {
-    this.pc = new RTCPeerConnection(this.iceConfig);
+        peer.on('error', (err: any) => {
+          callbacks.onConnectionChange?.('failed');
+        });
 
-    // Terima remote stream (untuk viewer)
-    this.pc.ontrack = (event) => {
-      if (event.streams?.[0]) {
-        this.callbacks.onRemoteStream?.(event.streams[0]);
-      }
-    };
-
-    // Kirim ICE candidate ke peer lain via WebSocket
-    this.pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        wsService.send({
-          type: 'ice_candidate',
-          roomId: this.roomId,
-          data: { candidate: event.candidate },
+        peer.on('close', () => {
+          callbacks.onConnectionChange?.('closed');
         });
       }
-    };
 
-    this.pc.onconnectionstatechange = () => {
-      this.callbacks.onConnectionChange?.(this.pc!.connectionState);
-    };
-  }
+      try { peer.signal(signal); } catch {}
+    });
 
-  private async createAndSendOffer(targetUserId: string) {
-    try {
-      const offer = await this.pc!.createOffer({
-        offerToReceiveVideo: false, // Streamer tidak terima video balik
-        offerToReceiveAudio: false,
-      });
-      await this.pc!.setLocalDescription(offer);
-      wsService.send({
-        type: 'offer',
-        roomId: this.roomId,
-        data: { sdp: offer, targetId: targetUserId },
-      });
-    } catch (e) {}
+    // ICE candidate dari host
+    socketService.on('webrtc:ice', ({ from, candidate }: any) => {
+      const peer = this.peers.get('host');
+      if (peer && !peer.destroyed) {
+        try { peer.signal({ candidate }); } catch {}
+      }
+    });
   }
 
   stopStream() {
-    // Hentikan semua track kamera/mikrofon
     this.localStream?.getTracks().forEach(t => t.stop());
     this.localStream = null;
-    this.pc?.close();
-    this.pc = null;
+    this.peers.forEach(p => { try { p.destroy(); } catch {} });
+    this.peers.clear();
+    this.role = null;
   }
 
   getLocalStream() {
     return this.localStream;
   }
+
+  flipCamera(currentFacing: string): Promise<MediaStream | null> {
+    return new Promise(async (resolve) => {
+      if (!this.localStream) return resolve(null);
+      const newFacing = currentFacing === 'user' ? 'environment' : 'user';
+      this.localStream.getVideoTracks().forEach(t => t.stop());
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: newFacing },
+          audio: false,
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        // Replace track di semua peer
+        this.peers.forEach(peer => {
+          const sender = peer._pc?.getSenders?.()?.find((s: any) => s.track?.kind === 'video');
+          if (sender) sender.replaceTrack(newTrack).catch(() => {});
+        });
+        // Ganti track di localStream
+        const oldTrack = this.localStream!.getVideoTracks()[0];
+        if (oldTrack) this.localStream!.removeTrack(oldTrack);
+        this.localStream!.addTrack(newTrack);
+        this.callbacks.onLocalStream?.(this.localStream!);
+        resolve(this.localStream);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
 }
 
-export const webrtcService = new WebRTCService();
+export const webrtcService = new WebRTCServiceV2();
